@@ -5,17 +5,60 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/riscv-xray)](https://pypi.org/project/riscv-xray/)
 
-**RISC-V extension profiler for developers targeting RVA23.**
+**riscv-xray tells you what your workload actually demands from RISC-V hardware — which extensions it uses, which it misses, and whether the silicon area investment pays off.**
 
-See exactly which RVA23 extensions your binary uses, find missed vectorization, check CFI security posture, and validate compliance in CI — all from one tool.
+---
+
+## Why riscv-xray
+
+RISC-V's modular ISA means chip architects choose which extensions to include.
+Including unnecessary extensions wastes silicon area.
+Missing critical ones leaves performance on the table.
+
+But until now there was no easy way to answer:
+**"For my workload, which extensions actually matter?"**
+
+riscv-xray answers that question in one command.
 
 ```
-$ riscv-xray lint ./my-service --profile rva23
+$ riscv-xray profile ./my-service --profile rva23
 
-  FAIL  2/10 mandatory extensions active (20%)
-  Missing:  Zicond, Zcb, Zfa, Zvbb, Zvkng, Zvfhmin, Zicntr, Zicfiss
+  RVA23 Compliance Gap Report
+  ----------------------------------------------------------
+  RVV        Vector              52.1%   [+] Active
+  Zba        Address gen          7.7%   [+] Active
+  Zbb        Bit manip            1.2%   [~] Minimal (<5%)
+  Zicond     Conditional ops      0.0%   [-] Missing
+  Zvkng      Vector GCM           0.0%   [-] Missing
+  Zvfhmin    Vector FP16 cvt      0.0%   [-] Missing
+
+  Score: 4/10 mandatory extensions active  (40%)
   Fix: -march=rv64gcv_zba_zbb_zicond_zcb_zfa_zvbb_zvkng_zvfhmin_zicntr
 ```
+
+---
+
+## Vendor extension support
+
+Chip vendors can add support for their own proprietary extensions without
+touching core code. A plugin is a single Python file dropped into a directory.
+
+```python
+# my_vendor_ext.py
+EXTENSION_NAME = "XMyCore"
+PREFIXES       = ["xmc.vadd", "xmc.vmul", "xmc.load"]
+METADATA       = {"name": "MyCore Vector", "rva23_status": "vendor", ...}
+
+def classify(mnemonic: str) -> bool:
+    return any(mnemonic.startswith(p) for p in PREFIXES)
+```
+
+```bash
+riscv-xray profile ./binary --plugins ./my-plugins/
+```
+
+The **XTheadV** plugin (T-Head C906/C910 pre-RVV vendor vector) ships built-in
+as a reference implementation.
 
 ---
 
@@ -31,11 +74,11 @@ $ riscv-xray lint ./my-service --profile rva23
 
 ## Quick Start
 
-### Static analysis — works on any machine, no hardware needed
+### Static analysis — works on any machine
 
 ```bash
 pip install riscv-xray
-sudo apt install binutils-riscv64-linux-gnu   # provides riscv64 objdump
+sudo apt install binutils-riscv64-linux-gnu
 
 riscv-xray lint ./my-riscv-binary --profile rva23
 riscv-xray check
@@ -78,7 +121,7 @@ riscv-xray profile ./my-binary --mtune                # -mtune recommendation
 riscv-xray profile ./my-binary --check-vectorization  # missed vectorization
 riscv-xray profile ./my-binary --show-hwprobe         # runtime detection C code
 riscv-xray profile --from-perf profile.txt            # real hardware perf data
-riscv-xray profile ./my-binary --output json          # machine-readable output
+riscv-xray profile ./my-binary --output json          # machine-readable
 riscv-xray profile ./my-binary --output html > r.html # HTML report
 ```
 
@@ -159,28 +202,78 @@ riscv-xray check
 ---
 
 ## Output examples
+## Real benchmark results
 
-### RVA23 compliance gap (`--profile rva23`)
+Two versions of the same workload: scalar (compiled with `-march=rv64gc`) 
+vs explicit RVV intrinsics (compiled with `-march=rv64gcv`).
 
-```
-----------------------------------------------------------
-  RVA23 Compliance Gap Report
-----------------------------------------------------------
-  Profile:  RVA23 — 2023 application processor profile
+### Scalar binary — no vector extensions
 
-  Mandatory Extension Coverage
-  --------------------------------------------------------
-  RVV        Vector              52.1%   [+] Active
-  Zba        Address gen          7.7%   [+] Active
-  Zbb        Bit manip            1.2%   [~] Minimal (<5%)
-  Zicond     Conditional ops      0.0%   [-] Missing
-  Zvkng      Vector GCM           0.0%   [-] Missing
+\```
+$ riscv-xray profile ./bench_scalar --profile rva23
 
-  Score: 2/10 mandatory extensions active  (20%)
+  Binary:   bench_scalar
+  Backend:  objdump-static (367 instructions)
 
-  Missing extensions fix:
-    -march=rv64gcv_zba_zbb_zicond_zcb_zfa_zvbb_zvkng_zvfhmin_zicntr
-```
+  RVV    Vector         ░░░░░░░░░░░░░░░░    0.0%  [-]
+  Zbb    Bit manip      ░░░░░░░░░░░░░░░░    0.3%  [-]
+  Base   Scalar base                       99.7%
+
+  Score: 0/10 mandatory extensions active (0%)
+  Fix: -march=rv64gcv_zba_zbb_zicond_zcb_zfa_zvbb_zvkng_zvfhmin_zicntr
+\```
+
+### RVV binary — explicit vector intrinsics
+
+\```
+$ riscv-xray profile ./bench_rvv --profile rva23
+
+  Binary:   bench_rvv
+  Backend:  objdump-static (327 instructions)
+
+  RVV    Vector         █░░░░░░░░░░░░░░░    7.0%  [+]
+  Base   Scalar base                       93.0%
+
+  Score: 1/10 mandatory extensions active (10%)
+\```
+
+### Compare — scalar vs RVV
+
+\```
+$ riscv-xray compare ./bench_scalar ./bench_rvv
+
+                        bench_scalar   bench_rvv    Delta
+  RVV    Vector           0.0%          7.0%        +7.0% [+]
+  Base   Scalar base     99.7%         93.0%        -6.7% [-]
+
+  Significant changes: RVV increased by 7.0pp (0.0% -> 7.0%)
+\```
+
+riscv-xray correctly identifies that the RVV binary uses vector instructions
+the scalar version does not — without running on real hardware.
+
+### Security analysis
+
+\```
+$ riscv-xray profile ./bench_rvv --security
+
+  CFI (Control Flow Integrity): [-] Not detected
+  [!] Automotive  ISO 26262 ASIL-D — CFI required but absent
+  [!] Server      Shadow stack recommended but absent
+
+  Fix: compile with -mbranch-protection=standard (GCC 14+)
+\```
+
+### Missed vectorization detection
+
+\```
+$ riscv-xray profile ./bench_rvv --check-vectorization
+
+  Analyzed 17 functions (5 candidates)
+  [!] main — HIGH: 105 instructions, 25 float/memory ops, 0 vector
+\```
+
+See `examples/` for the benchmark source code.
 
 ### Vector quality (`--vector-quality`)
 
@@ -193,10 +286,12 @@ riscv-xray check
 
   vsetvli ratio:      18.0%  [!]
     18% of vector instructions are vsetvli — high overhead.
+    Ideal < 5%. Frequent resets indicate short, non-amortized loops.
     => Use longer loop bodies. Try: -mrvv-max-lmul=dynamic
 
   Vector mem ratio:   34.0%  [~]
     Workload is memory-bandwidth bound.
+    => Consider data layout optimization or prefetching.
 ```
 
 ### Security analysis (`--security`)
@@ -215,9 +310,7 @@ riscv-xray check
   [!]  Server         Production hardening — shadow stack absent
   [ ]  Embedded       CFI optional for this market
 
-  To enable CFI:
-    Compile with: -mbranch-protection=standard
-    Requires:     GCC 14+ or LLVM 18+
+  To enable CFI: -mbranch-protection=standard  (GCC 14+ / LLVM 18+)
 ```
 
 ### Missed vectorization (`--check-vectorization`)
@@ -234,38 +327,81 @@ riscv-xray check
   [~]  compute_hash                                  MEDIUM
        31 instructions, 9 float/memory ops, 0 vector instructions
 
-  Note: Static analysis only — may have false positives.
-  Verify with: gcc -fopt-info-vec-missed -O2 -march=rv64gcv
+  Note: Static analysis only. Verify with: gcc -fopt-info-vec-missed
 ```
+
+### -mtune recommendation (`--mtune`)
+
+```
+----------------------------------------------------------
+  Hardware Tune Target
+----------------------------------------------------------
+  Confidence: [+] MEDIUM
+
+  Recommended: -mtune=sifive-p670
+               (SiFive P670, 4-wide OOO, RVA23, 512-bit vector)
+  Alternative: -mtune=generic-ooo
+
+  Why:
+    - High RVV usage (52.1%) — out-of-order core with wide vector units
+    - Zba active — address generation unit is utilized
+
+  Disclaimer:
+    Recommendation based on static instruction mix analysis.
+    Verify with actual hardware benchmarking before shipping.
+```
+## Custom instruction hotspot analysis
+
+RISC-V allows you to define your own opcodes. `riscv-xray hotspot` finds
+the instruction sequences in your binary that repeat often enough to be
+worth fusing into a custom instruction.
+
+### Find candidates
+
+\```
+$ riscv-xray hotspot ./bench_hotspot
+
+  Functions analyzed:  13   Total instructions: 381
+  Candidates found:    4
+
+  [!]  saxpy    HIGH — RVV FMA kernel, 4x, 62% of function, ~75% reduction
+  [!]  daxpy    HIGH — RVV FMA kernel, 4x, 59% of function, ~75% reduction
+  [!]  gemv_row HIGH — RVV FMA kernel, 4x, 59% of function, ~75% reduction
+\```
+
+### Generate a C stub
+
+\```
+$ riscv-xray gen-stub ./bench_hotspot --function saxpy
+  Written: ./riscv_custom_xfmak.h
+
+$ cat riscv_custom_xfmak.h
+  // __riscv_xfmak(float *out, const float *a, const float *b, size_t n)
+  // Fuses: vle32 + vle32 + vfmacc + vse32 into one opcode
+  // Saves ~75% of instructions in saxpy
+  // Opcode space: custom-0 (0x0B)
+\```
+
+The generated `.h` file is a starting point for implementing the instruction
+in CodAL, Sail, or a QEMU patch.
 
 ---
 
-## Plugin architecture
+## CI integration
 
-Add support for vendor or experimental extensions without touching core code.
+```yaml
+# .github/workflows/riscv-compliance.yml
+- name: Install riscv-xray
+  run: |
+    sudo apt-get install -y binutils-riscv64-linux-gnu
+    pip install riscv-xray
 
-```python
-# riscv_xray/plugins/my_vendor.py
-EXTENSION_NAME = "XVendor"
-PREFIXES       = ["xv.vadd", "xv.vmul"]
-METADATA       = {
-    "name":        "Vendor Vector",
-    "description": "Vendor-specific vector extension",
-    "rva23_status": "vendor",
-}
+- name: RVA23 compliance check
+  run: riscv-xray lint ./build/my-service --profile rva23
 
-def classify(mnemonic: str) -> bool:
-    return any(mnemonic.startswith(p) for p in PREFIXES)
-
-def analyze(mnemonics: list) -> dict:
-    return {}
+- name: Automotive CFI check
+  run: riscv-xray lint ./build/my-service --profile rva23 --market automotive
 ```
-
-```bash
-riscv-xray profile ./binary --plugins ./my-plugins/
-```
-
-Built-in plugin: **XTheadV** (T-Head C906/C910 vendor vector, pre-RVV).
 
 ---
 
@@ -302,32 +438,21 @@ riscv_xray/
 
 ---
 
-## CI integration
-
-```yaml
-# .github/workflows/rva23.yml
-- name: Install riscv-xray
-  run: |
-    sudo apt install binutils-riscv64-linux-gnu
-    pip install riscv-xray
-
-- name: RVA23 compliance check
-  run: riscv-xray lint ./build/my-service --profile rva23
-
-- name: Automotive CFI check
-  run: riscv-xray lint ./build/my-service --profile rva23 --market automotive
-```
-
----
-
 ## Built on
 
 - **QEMU** — TCG plugin API for user-mode RISC-V emulation
 - **Linux perf** — hardware performance counter sampling
-- **RAVE** (arxiv:2409.13639) — demonstrated the QEMU TCG plugin approach for RISC-V profiling
+- **RAVE** (arxiv:2409.13639) — demonstrated the QEMU TCG plugin approach for RISC-V instruction profiling
+
+---
+
+## Contributing
+
+Real-world benchmark analyses are the highest-value contributions.
+If you run riscv-xray on a known workload (Embench-IoT, SPEC, LLM inference, networking stack) and get interesting results, open a PR adding it to `examples/`.
 
 ---
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE)
