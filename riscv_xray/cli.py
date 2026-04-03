@@ -61,37 +61,55 @@ def cmd_profile(args):
     fmt = args.output
     plugin_dir = getattr(args, "plugins", None)
 
+    br = None  # BackendResult, set for objdump/perf paths
+
     # ── perf backend path ──────────────────────────────────────────────────────
     if from_perf:
         print(f"  riscv-xray - parsing perf profile '{Path(from_perf).name}'...",
               file=sys.stderr)
         try:
-            from .backends import BackendResult, run_backend
-            result = run_backend(from_perf, backend="perf")
+            from .backends import run_backend
+            br = run_backend(from_perf, backend="perf")
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
-        for w in result.warnings:
+        for w in br.warnings:
             print(f"  {w}", file=sys.stderr)
-        mnemonics = result.mnemonics
+        mnemonics = br.mnemonics
         mode = "perf-hardware"
         backend_str = f"perf-annotate (real hardware)"
         name = Path(from_perf).stem
         data = classifier.classify(mnemonics)
 
-    # ── QEMU / default path ────────────────────────────────────────────────────
+    # ── objdump / QEMU / auto path ────────────────────────────────────────────
     else:
         binary = args.binary
         binary_args = args.args.split() if args.args else []
         timeout = args.timeout
         print(f"  riscv-xray - profiling '{Path(binary).name}'...", file=sys.stderr)
-        try:
-            mnemonics, data, mode, backend_str, name = _run_profile(
-                binary, binary_args, timeout, plugin_dir
-            )
-        except RuntimeError as e:
-            print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+
+        if backend_flag == "qemu":
+            # Explicit QEMU request
+            try:
+                mnemonics, data, mode, backend_str, name = _run_profile(
+                    binary, binary_args, timeout, plugin_dir
+                )
+            except RuntimeError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            # "auto" or "objdump" — use backend router (prefers objdump for ELF)
+            try:
+                from .backends import run_backend
+                br = run_backend(binary, backend=backend_flag)
+            except RuntimeError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+            mnemonics = br.mnemonics
+            mode = br.backend
+            backend_str = f"objdump-static ({len(mnemonics):,} instructions)"
+            name = Path(binary).name
+            data = classifier.classify(mnemonics)
 
     if getattr(args, "verbose", False):
         from collections import Counter
@@ -141,7 +159,10 @@ def cmd_profile(args):
 
     # --check-vectorization
     if getattr(args, "check_vectorization", False) and fmt == "text":
-        av = autovec.analyze_autovec(mnemonics)
+        if br is not None and br.functions:
+            av = autovec.analyze_binary(br.functions)
+        else:
+            av = {"opportunities": [], "clean_functions": 0, "total_functions": 0}
         section = autovec.format_autovec_report(av)
         if section:
             output_parts.append(section)
@@ -159,10 +180,10 @@ def _profile_one(binary, timeout=60, plugin_dir=None):
     """Profile a single binary for compare mode."""
     name = Path(binary).name
     print(f"  Profiling '{name}'...", file=sys.stderr)
-    mnemonics, data, mode, backend, name = _run_profile(
-        binary, [], timeout, plugin_dir
-    )
-    return data, mode, name
+    from .backends import run_backend
+    result = run_backend(binary, backend="auto")
+    data = classifier.classify(result.mnemonics)
+    return data, result.backend, name
 
 
 def cmd_compare(args):
@@ -290,9 +311,10 @@ def cmd_lint(args):
           file=sys.stderr)
 
     try:
-        mnemonics, data, mode, backend, name = _run_profile(
-            binary, [], timeout, plugin_dir
-        )
+        from .backends import run_backend
+        br = run_backend(binary, backend="objdump")
+        mnemonics = br.mnemonics
+        data = classifier.classify(mnemonics)
     except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -469,6 +491,51 @@ def cmd_check(args):
     print()
 
 
+def cmd_hotspot(args):
+    """Find custom instruction candidates in a RISC-V binary."""
+    from .hotspot import analyze, format_report
+
+    print(f"  riscv-xray hotspot - analyzing '{Path(args.binary).name}'...",
+          file=sys.stderr)
+    try:
+        report = analyze(args.binary, min_repeats=args.min_repeats)
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.output == "json":
+        import json, dataclasses
+        print(json.dumps(dataclasses.asdict(report), indent=2))
+    else:
+        print(format_report(report, verbose=args.verbose))
+
+
+def cmd_genstub(args):
+    """Generate a C intrinsic stub for a custom instruction candidate."""
+    import os
+    from .gen_stub import find_function_pattern, write_stub
+
+    print(f"  riscv-xray gen-stub - '{args.function}' in '{Path(args.binary).name}'...",
+          file=sys.stderr)
+    try:
+        candidate = find_function_pattern(args.binary, args.function)
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if candidate is None:
+        print(f"  No custom instruction candidate found for '{args.function}'",
+              file=sys.stderr)
+        print(f"  Run: riscv-xray hotspot {args.binary}", file=sys.stderr)
+        sys.exit(1)
+
+    hint = candidate.pattern["custom_opcode_hint"].lower()
+    fname = f"riscv_custom_{hint}.h"
+    out_path = os.path.join(args.output_dir, fname)
+    write_stub(candidate, out_path, args.opcode_slot)
+    print(f"  Next: implement this in CodAL or Sail, then test with QEMU")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="riscv-xray",
@@ -549,6 +616,29 @@ def main():
                     help="Output file for perf annotate (default: profile.txt)")
     rp.add_argument("--timeout", type=int, default=120)
 
+    # ── hotspot ────────────────────────────────────────────────────────────────
+    hp = subparsers.add_parser("hotspot",
+                                help="Find custom instruction candidates")
+    hp.add_argument("binary", help="RISC-V ELF binary to analyze")
+    hp.add_argument("--min-repeats", dest="min_repeats", type=int, default=2,
+                    help="Minimum pattern repetitions to report (default 2)")
+    hp.add_argument("--verbose", action="store_true",
+                    help="Show all candidates including LOW severity")
+    hp.add_argument("--output", choices=["text", "json"], default="text")
+
+    # ── gen-stub ───────────────────────────────────────────────────────────────
+    gp = subparsers.add_parser("gen-stub",
+                                help="Generate C intrinsic stub for a candidate function")
+    gp.add_argument("binary", help="RISC-V ELF binary")
+    gp.add_argument("--function", required=True, dest="function",
+                    help="Function name from hotspot output")
+    gp.add_argument("--output", default=".", dest="output_dir",
+                    help="Directory to write the .h file (default: .)")
+    gp.add_argument("--opcode-slot", dest="opcode_slot",
+                    choices=["custom-0", "custom-1", "custom-2", "custom-3"],
+                    default="custom-0",
+                    help="RISC-V custom opcode space (default: custom-0)")
+
     args = parser.parse_args()
 
     if args.command == "profile":
@@ -563,6 +653,10 @@ def main():
         cmd_check(args)
     elif args.command == "record":
         cmd_record(args)
+    elif args.command == "hotspot":
+        cmd_hotspot(args)
+    elif args.command == "gen-stub":
+        cmd_genstub(args)
     else:
         parser.print_help()
         sys.exit(1)
