@@ -1,0 +1,9 @@
+# riscv-xray requirements
+# Core: stdlib only (subprocess, pathlib, argparse, json, importlib)
+
+# Optional: riscv-application-profiler for deeper instruction metrics
+# Install with: pip install riscv-application-profiler
+# riscv-application-profiler
+
+# Development dependencies
+pytest>=7.0

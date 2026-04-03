@@ -1,0 +1,16 @@
+XRAY_INSN:vadd.vv
+XRAY_INSN:vsub.vv
+XRAY_INSN:vmul.vv
+XRAY_INSN:add
+XRAY_INSN:add
+XRAY_INSN:add
+XRAY_INSN:sh1add
+XRAY_INSN:clz
+XRAY_INSN:clmul
+XRAY_INSN:xperm4
+XRAY_INSN:rdcycle
+XRAY_INSN:addi
+XRAY_INSN:lw
+XRAY_INSN:sw
+XRAY_INSN:jalr
+XRAY_DONE

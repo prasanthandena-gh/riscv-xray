@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Python Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install riscv-xray
+        run: pip install -e ".[dev]"
+
+      - name: Run tests
+        run: pytest tests/ -v
+
+  lint-static:
+    name: Static Analysis (Mode 1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y binutils-riscv64-linux-gnu
+          pip install riscv-xray
+
+      - name: Environment check
+        run: riscv-xray check
+
+      - name: Build a minimal RISC-V test binary
+        run: |
+          if command -v riscv64-linux-gnu-gcc &>/dev/null; then
+            echo 'int main(){return 0;}' > /tmp/test.c
+            riscv64-linux-gnu-gcc -static -march=rv64gcv_zba_zbb \
+              -o /tmp/riscv-test /tmp/test.c
+            riscv-xray lint /tmp/riscv-test --profile rva23 --threshold 20
+          else
+            echo "RISC-V GCC not available — skipping binary test"
+          fi
+
+  build-plugin:
+    name: Build QEMU Plugin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y qemu-user gcc libglib2.0-dev
+
+      - name: Build plugin (best-effort)
+        run: |
+          make plugin || echo "Plugin build failed (QEMU may lack plugin support) — skipping"
+
+      - name: Upload plugin artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xray-plugin
+          path: plugin/xray_plugin.so
+          if-no-files-found: ignore

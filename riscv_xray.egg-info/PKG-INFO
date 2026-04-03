@@ -1,0 +1,121 @@
+Metadata-Version: 2.1
+Name: riscv-xray
+Version: 0.1.0
+Summary: Developer-friendly RISC-V extension profiler
+Home-page: UNKNOWN
+Author: riscv-xray contributors
+License: MIT
+Description: # riscv-xray
+        
+        Developer-friendly RISC-V extension profiler. One command to see which RVA23 extensions your binary actually uses, with actionable compiler recommendations.
+        
+        ```
+        $ riscv-xray profile ./my-service
+        
+          riscv-xray - profiling 'my-service'...
+        
+        ---------------------------------------------------------
+          riscv-xray v0.1.0  Extension Usage Report
+        ---------------------------------------------------------
+          Binary:   my-service
+          Backend:  riscv-xray-builtin
+          Profile:  RVA23
+        
+          Extension Usage
+          -------------------------------------------------------
+          RVV    Vector           ████████████████  52.1%  [+]
+          Zba    Address gen      ███░░░░░░░░░░░░░   7.7%  [~]
+          Zbb    Bit manip        ██░░░░░░░░░░░░░░   3.3%  [~]
+          Zbc    Carry-less mul   ░░░░░░░░░░░░░░░░   0.0%  [-]
+          Zbkx   Crypto xbar      ░░░░░░░░░░░░░░░░   0.0%  [-]
+          Zicntr Counters         ░░░░░░░░░░░░░░░░   0.4%  [~]
+          Base   Scalar base                        36.5%
+        
+          Total instructions analyzed: 2,842
+          ...
+        ```
+        
+        ## Install
+        
+        ```bash
+        # 1. Install QEMU user-mode emulation
+        sudo apt install qemu-user
+        
+        # 2. Build the QEMU plugin
+        make plugin
+        
+        # 3. Install the Python package
+        pip install -e .
+        
+        # 4. Verify everything works
+        riscv-xray check
+        ```
+        
+        ## Usage
+        
+        ```bash
+        # Profile a RISC-V binary
+        riscv-xray profile ./my-binary
+        
+        # Profile with arguments
+        riscv-xray profile ./my-binary --args "--config prod.yaml"
+        
+        # Output as JSON
+        riscv-xray profile ./my-binary --output json
+        
+        # Output as HTML report
+        riscv-xray profile ./my-binary --output html > report.html
+        
+        # Check dependencies
+        riscv-xray check
+        ```
+        
+        ## How It Works
+        
+        ```
+        Your Binary
+            |
+            v
+        qemu-riscv64 + xray_plugin.so   (captures every instruction mnemonic)
+            |
+            v
+        classifier.py                    (maps mnemonics to RVA23 extensions)
+            |
+            v
+        recommender.py                   (generates actionable suggestions)
+            |
+            v
+        report.py                        (renders text / HTML / JSON output)
+        ```
+        
+        ## Built On
+        
+        ### QEMU — https://www.qemu.org
+        riscv-xray uses QEMU's TCG plugin API for user-mode RISC-V emulation. QEMU is the industry standard for RISC-V software development without hardware.
+        
+        ### riscv-application-profiler — https://github.com/mahendraVamshi/riscv-application-profiler
+        When installed, riscv-xray uses riscv-application-profiler as its instruction analysis backend for deeper metrics. We strongly recommend installing it for best results:
+        ```bash
+        pip install riscv-application-profiler
+        ```
+        
+        ### RAVE — https://arxiv.org/abs/2409.13639
+        The RAVE research project (European Processor Initiative) demonstrated the QEMU TCG plugin approach for RISC-V instruction profiling. riscv-xray extends this concept to all RVA23 extensions with a developer-friendly layer.
+        
+        ---
+        
+        riscv-xray builds on top of QEMU, riscv-application-profiler, and concepts from the RAVE research project. Our contribution is the integration layer, RVA23 extension mapping, and developer-friendly output with actionable recommendations.
+        
+        ## License
+        
+        MIT
+        
+Platform: UNKNOWN
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Topic :: Software Development :: Compilers
+Classifier: Topic :: System :: Emulators
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
